@@ -51,7 +51,7 @@ local settings = { exifstamp_color = color,
 
 local rows = t.buildStampRows( meta, settings )
 local clause = t.buildBlockClause( rows, '/System/Library/Fonts/Helvetica.ttc', settings,
-	'17', '4', '34', '2' )
+	'17', '4', '17', '2', '8' )
 local cmd = string.format(
 	'/opt/homebrew/bin/magick -size 380x260 gradient:gray25-gray70 %s '
 	.. '-gravity %s -geometry +16+16 -compose over -composite "%s"',

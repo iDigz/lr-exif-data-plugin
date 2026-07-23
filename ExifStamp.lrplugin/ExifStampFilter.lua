@@ -211,7 +211,7 @@ local function buildStampRows( meta, settings )
 
 	local function add( enabled, label, value )
 		if enabled and value then
-			rows[ #rows + 1 ] = { label = label, value = value }
+			rows[ #rows + 1 ] = { label = label, value = string.upper( value ) }
 		end
 	end
 
@@ -234,9 +234,10 @@ end
 -- Build the ImageMagick clause that renders the whole stamp block as one image
 -- with transparency: a left column of badges (filled rectangles with knockout
 -- letters showing the photo through) and a right column of values, right-aligned.
--- rh/sp/gap/sw are strings: either plain numbers (preview) or shell variables
+-- rh/sp/gap/sw/bp are strings: either plain numbers (preview) or shell variables
 -- like "$P" (export, where sizes depend on the image height measured in shell).
-local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw )
+-- bp is the horizontal padding inside a badge.
+local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, bp )
 	local badgeColor, fillColor, strokeColor
 	if settings.exifstamp_color == 'black' then
 		badgeColor, fillColor, strokeColor = 'black', 'black', 'white'
@@ -254,12 +255,14 @@ local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw )
 			values[ #values + 1 ] = spacer
 		end
 
-		-- Badge: render label white-on-black, negate, turn brightness into
-		-- alpha (letters transparent, box opaque), then paint the box.
+		-- Badge: render the label, trim to the glyphs, center it inside the
+		-- full-height box via -extent, then negate + alpha-copy so the letters
+		-- become transparent holes and paint the box itself.
 		badges[ #badges + 1 ] = string.format(
 			'\\( -background black -fill white -font "%s" -size x%s label:%s '
+			.. '-trim +repage -gravity center -extent "%%[fx:w+%s*2]x%s" '
 			.. '-negate -alpha copy -fill %s -colorize 100 \\)',
-			fontPath, rh, shellQuote( ' ' .. row.label .. ' ' ), badgeColor )
+			fontPath, rh, shellQuote( row.label ), bp, rh, badgeColor )
 
 		-- Value: outline pass + clean fill pass on top.
 		local quotedValue = shellQuote( row.value )
@@ -285,12 +288,12 @@ local function stampPhoto( magick, fontPath, filePath, rows, settings )
 
 	-- Sizes are derived from the image height in shell: P is the row height,
 	-- S the outline width, SP the spacing between rows, GAP the minimum gap
-	-- between the badge column and the value column.
-	local blockClause = buildBlockClause( rows, fontPath, settings, '$P', '$SP', '$GAP', '$S' )
+	-- between the badge column and the value column, BP the badge padding.
+	local blockClause = buildBlockClause( rows, fontPath, settings, '$P', '$SP', '$GAP', '$S', '$BP' )
 
 	local command = string.format(
 		'H=$(%s identify -format %%h %s); P=$((H*%d/1000)); [ "$P" -lt 8 ] && P=8; '
-		.. 'S=$((P/14+1)); SP=$((P/3)); GAP=$((P*2)); '
+		.. 'S=$((P/14+1)); SP=$((P/3)); GAP=$P; BP=$((P/2)); '
 		.. '%s %s %s -gravity %s -geometry "+$P+$P" -compose over -composite %s',
 		magick, quotedPath, size,
 		magick, quotedPath, blockClause, gravity, quotedPath
@@ -352,7 +355,7 @@ local function generatePreview( propertyTable, openAfter )
 		if #rows > 0 then
 			blockClause = buildBlockClause( rows, fontPath, settings,
 				tostring( rowHeight ), tostring( math.floor( rowHeight / 4 ) ),
-				tostring( rowHeight * 2 ), '2' )
+				tostring( rowHeight ), '2', tostring( math.floor( rowHeight / 2 ) ) )
 				.. string.format( ' -gravity %s -geometry +16+16 -compose over -composite', gravity )
 		end
 
