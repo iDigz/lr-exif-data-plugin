@@ -30,7 +30,7 @@ local ExifStampFilter = {}
 
 ExifStampFilter.exportPresetFields = {
 	{ key = 'exifstamp_corner', default = 'SouthEast' },
-	{ key = 'exifstamp_size', default = 18 },        -- text height, 1/1000 of image height
+	{ key = 'exifstamp_fontSize', default = 9 },     -- text height, 1/1000 of image height
 	{ key = 'exifstamp_color', default = 'white' },
 	{ key = 'exifstamp_showCamera', default = true },
 	{ key = 'exifstamp_showLens', default = true },
@@ -91,7 +91,9 @@ local function buildStampText( photo, settings )
 	add( settings.exifstamp_showShutter, cleanShutter( photo:getFormattedMetadata( 'shutterSpeed' ) ) )
 	add( settings.exifstamp_showIso, photo:getFormattedMetadata( 'isoSpeedRating' ) )
 
-	return table.concat( parts, ' · ' )
+	-- Join with a literal "\n" sequence: ImageMagick's -annotate interprets it
+	-- as a line break, so each item ends up on its own line.
+	return table.concat( parts, '\\n' )
 end
 
 -- Wrap text in single quotes for /bin/sh: ' becomes '\''
@@ -107,7 +109,7 @@ local function stampPhoto( magick, fontPath, filePath, text, settings )
 		fillColor, strokeColor = 'white', 'black'
 	end
 
-	local size = tonumber( settings.exifstamp_size ) or 18
+	local size = tonumber( settings.exifstamp_fontSize ) or 9
 	local gravity = settings.exifstamp_corner or 'SouthEast'
 	local quotedPath = '"' .. filePath .. '"'
 	local quotedText = shellQuote( text )
@@ -115,8 +117,8 @@ local function stampPhoto( magick, fontPath, filePath, text, settings )
 	-- One shell line: measure image height, derive point size, padding and
 	-- stroke width, then draw the text twice (outline pass + fill pass).
 	local command = string.format(
-		'H=$(%s identify -format %%h %s); P=$((H*%d/1000)); [ "$P" -lt 8 ] && P=8; S=$((P/12+1)); '
-		.. '%s %s -gravity %s -font "%s" -pointsize "$P" '
+		'H=$(%s identify -format %%h %s); P=$((H*%d/1000)); [ "$P" -lt 8 ] && P=8; S=$((P/14+1)); '
+		.. '%s %s -gravity %s -font "%s" -pointsize "$P" -interline-spacing "$((P/3))" '
 		.. '-stroke %s -strokewidth "$S" -fill %s -annotate "+$P+$P" %s '
 		.. '-stroke none -fill %s -annotate "+$P+$P" %s %s',
 		magick, quotedPath, size,
@@ -157,11 +159,11 @@ function ExifStampFilter.sectionForFilterInDialog( f, propertyTable )
 			f:row {
 				f:static_text { title = 'Размер:', width = LrView.share 'exifstamp_label' },
 				f:popup_menu {
-					value = bind 'exifstamp_size',
+					value = bind 'exifstamp_fontSize',
 					items = {
-						{ title = 'Мелкий', value = 12 },
-						{ title = 'Средний', value = 18 },
-						{ title = 'Крупный', value = 25 },
+						{ title = 'Мелкий', value = 6 },
+						{ title = 'Средний', value = 9 },
+						{ title = 'Крупный', value = 12 },
 					},
 				},
 			},
