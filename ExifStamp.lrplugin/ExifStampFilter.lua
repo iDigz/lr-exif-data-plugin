@@ -13,7 +13,6 @@ local LrFileUtils = import 'LrFileUtils'
 local LrPathUtils = import 'LrPathUtils'
 local LrDialogs = import 'LrDialogs'
 local LrLogger = import 'LrLogger'
-local LrApplication = import 'LrApplication'
 
 local logger = LrLogger('ExifStamp')
 logger:enable('logfile')
@@ -260,55 +259,70 @@ local function stampPhoto( magick, fontPath, filePath, text, settings )
 	return exitCode == 0
 end
 
+-- Sample EXIF used only for the dialog preview, so the user sees the styling
+-- (font, size, color, corner, which lines) without needing a real photo.
+local SAMPLE_META = {
+	camera = 'Canon EOS R5m2',
+	lens = 'Canon RF 24-70mm F2.8L IS USM',
+	focal = '50',
+	aperture = '2.8',
+	shutter = '1/250',
+	iso = '8000',
+}
+
 -- Each preview goes to a new file so the dialog's picture reloads instead of
 -- showing a cached image.
 local previewCounter = 0
 
--- Build a small preview: take the selected photo's thumbnail, stamp it with the
--- current settings and point the dialog picture at the result. Runs only in the
--- export dialog, so a failure here never affects the actual export.
+-- Draw the EXIF block with sample data onto a small gradient swatch and point
+-- the dialog picture at the result. Runs only in the export dialog, so any
+-- failure here never affects the actual export. The point size is bigger than
+-- the real ‰-of-height value so the text stays readable on the small swatch.
 local function generatePreview( propertyTable )
 	local magick = findExistingFile( MAGICK_CANDIDATES )
-	local exiftool = findExistingFile( EXIFTOOL_CANDIDATES )
-	if not magick or not exiftool then
+	if not magick then
 		return
 	end
-
-	local photo = LrApplication.activeCatalog():getTargetPhoto()
-	if not photo then
-		return
-	end
-
-	local tempDir = LrPathUtils.getStandardFilePath( 'temp' )
 	local settings = propertyTable
 
-	photo:requestJpegThumbnail( 500, 400, function( jpegData, errorMsg )
-		if not jpegData then
-			logger:trace( 'preview thumbnail failed: ' .. tostring( errorMsg ) )
-			return
+	LrTasks.startAsyncTask( function()
+		local text = buildStampText( SAMPLE_META, settings )
+		if text == '' then
+			text = 'Нет выбранных полей'
 		end
 
-		LrTasks.startAsyncTask( function()
-			previewCounter = previewCounter + 1
-			local outPath = LrPathUtils.child( tempDir, 'exifstamp_preview_' .. previewCounter .. '.jpg' )
+		local fillColor, strokeColor
+		if settings.exifstamp_color == 'black' then
+			fillColor, strokeColor = 'black', 'white'
+		else
+			fillColor, strokeColor = 'white', 'black'
+		end
 
-			local file = io.open( outPath, 'wb' )
-			if not file then
-				return
-			end
-			file:write( jpegData )
-			file:close()
+		local pointSize = ( tonumber( settings.exifstamp_fontSize ) or 9 ) + 8
+		local gravity = settings.exifstamp_corner or 'SouthEast'
+		local fontPath = resolveFont( settings )
+		local quotedText = shellQuote( text )
 
-			if settings.exifstamp_enabled then
-				local meta = readMetadata( exiftool, photo:getRawMetadata( 'path' ), tempDir )
-				local text = meta and buildStampText( meta, settings ) or ''
-				if text ~= '' then
-					stampPhoto( magick, resolveFont( settings ), outPath, text, settings )
-				end
-			end
+		previewCounter = previewCounter + 1
+		local outPath = LrPathUtils.child(
+			LrPathUtils.getStandardFilePath( 'temp' ),
+			'exifstamp_preview_' .. previewCounter .. '.jpg' )
 
+		local command = string.format(
+			'%s -size 380x260 gradient:gray25-gray70 -gravity %s -font "%s" -pointsize %d '
+			.. '-interline-spacing %d -stroke %s -strokewidth 2 -fill %s -annotate +16+16 %s '
+			.. '-stroke none -fill %s -annotate +16+16 %s "%s"',
+			magick, gravity, fontPath, pointSize,
+			math.floor( pointSize / 3 ), strokeColor, fillColor, quotedText,
+			fillColor, quotedText, outPath )
+
+		logger:trace( 'preview exec: ' .. command )
+		local exitCode = LrTasks.execute( command )
+		if exitCode == 0 then
 			settings.exifstamp_previewPath = outPath
-		end )
+		else
+			logger:error( 'preview magick failed with code ' .. tostring( exitCode ) )
+		end
 	end )
 end
 
@@ -410,11 +424,11 @@ function ExifStampFilter.sectionForFilterInDialog( f, propertyTable )
 
 			f:spacer { height = 6 },
 
-			f:static_text { title = 'Предпросмотр (выделенное фото):' },
+			f:static_text { title = 'Предпросмотр (пример данных):' },
 			f:picture {
 				value = bind 'exifstamp_previewPath',
-				frame_width = 250,
-				frame_height = 180,
+				frame_width = 380,
+				frame_height = 260,
 			},
 		},
 	}
