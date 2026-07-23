@@ -1,6 +1,11 @@
 -- Export filter: stamps EXIF info (camera, lens, exposure) onto exported photos
 -- using ImageMagick. The rendered file is modified in place after Lightroom
 -- finishes rendering it.
+--
+-- Camera and lens names come from exiftool run on the ORIGINAL file, not from
+-- Lightroom's metadata. Lightroom only exposes the short lens name
+-- ("RF24-70mm F2.8 L IS USM"); exiftool's LensID gives the full, properly
+-- spaced name ("Canon RF 24-70mm F2.8L IS USM").
 
 local LrView = import 'LrView'
 local LrTasks = import 'LrTasks'
@@ -17,6 +22,11 @@ local bind = LrView.bind
 local MAGICK_CANDIDATES = {
 	'/opt/homebrew/bin/magick',
 	'/usr/local/bin/magick',
+}
+
+local EXIFTOOL_CANDIDATES = {
+	'/opt/homebrew/bin/exiftool',
+	'/usr/local/bin/exiftool',
 }
 
 local FONT_CANDIDATES = {
@@ -54,42 +64,110 @@ local function isSupportedFile( path )
 	return SUPPORTED_EXTENSIONS[ extension ] == true
 end
 
--- Lightroom formats metadata with extra spaces and words ("f / 5.6", "1/250 sec").
--- Normalize to a compact form: "f/5.6", "1/250s", "35mm".
-local function cleanAperture( value )
-	if not value then return nil end
-	value = string.gsub( value, 'ƒ', 'f' )
-	value = string.gsub( value, '%s*/%s*', '/' )
+local function trim( value )
+	return ( string.gsub( value, '^%s*(.-)%s*$', '%1' ) )
+end
+
+-- Split text into a list of lines, ignoring carriage returns.
+local function splitLines( text )
+	local lines = {}
+	text = string.gsub( text, '\r', '' )
+	for line in string.gmatch( text .. '\n', '([^\n]*)\n' ) do
+		lines[ #lines + 1 ] = trim( line )
+	end
+	return lines
+end
+
+-- exiftool prints "-" (because of the -f flag) for any tag it cannot find.
+local function tagOrNil( value )
+	if not value or value == '' or value == '-' then
+		return nil
+	end
 	return value
 end
 
-local function cleanShutter( value )
-	if not value then return nil end
-	value = string.gsub( value, '%s*sec%.?$', 's' )
-	return value
+-- Read camera/lens/exposure from the original file with a single exiftool call.
+-- Output is captured by redirecting to a temp file, then read back.
+-- The tag order here MUST match the parsing below.
+local function readMetadata( exiftool, sourcePath, tempDir )
+	local outPath = LrPathUtils.child( tempDir,
+		'exifstamp_' .. LrPathUtils.leafName( sourcePath ) .. '.txt' )
+
+	local command = string.format(
+		'"%s" -s3 -f -Model -LensID -LensModel -FocalLength# -FNumber -ExposureTime -ISO "%s" > "%s" 2>/dev/null',
+		exiftool, sourcePath, outPath )
+
+	logger:trace( 'exec: ' .. command )
+	local exitCode = LrTasks.execute( command )
+	if exitCode ~= 0 then
+		logger:error( 'exiftool failed with code ' .. tostring( exitCode ) .. ' for ' .. sourcePath )
+		return nil
+	end
+
+	local content = LrFileUtils.readFile( outPath )
+	LrFileUtils.delete( outPath )
+	if not content then
+		return nil
+	end
+
+	local lines = splitLines( content )
+	local lensID = tagOrNil( lines[ 2 ] )
+	local lensModel = tagOrNil( lines[ 3 ] )
+
+	-- LensID is the full name, but sometimes exiftool cannot decide and returns
+	-- "X or Y" — fall back to the short LensModel in that case.
+	local lens = lensModel
+	if lensID and not string.find( lensID, ' or ' ) then
+		lens = lensID
+	end
+
+	return {
+		camera = tagOrNil( lines[ 1 ] ),
+		lens = lens,
+		focal = tagOrNil( lines[ 4 ] ),
+		aperture = tagOrNil( lines[ 5 ] ),
+		shutter = tagOrNil( lines[ 6 ] ),
+		iso = tagOrNil( lines[ 7 ] ),
+	}
 end
 
-local function cleanFocal( value )
+-- Turn raw exiftool values into compact display strings.
+local function formatFocal( value )
 	if not value then return nil end
-	value = string.gsub( value, '%s*mm$', 'mm' )
-	return value
+	value = string.gsub( value, '%.0$', '' )   -- "50.0" -> "50"
+	return value .. 'mm'
 end
 
-local function buildStampText( photo, settings )
+local function formatAperture( value )
+	if not value then return nil end
+	return 'f/' .. value
+end
+
+local function formatShutter( value )
+	if not value then return nil end
+	return value .. 's'
+end
+
+local function formatIso( value )
+	if not value then return nil end
+	return 'ISO ' .. value
+end
+
+local function buildStampText( meta, settings )
 	local parts = {}
 
 	local function add( enabled, value )
-		if enabled and value and value ~= '' then
+		if enabled and value then
 			parts[ #parts + 1 ] = value
 		end
 	end
 
-	add( settings.exifstamp_showCamera, photo:getFormattedMetadata( 'cameraModel' ) )
-	add( settings.exifstamp_showLens, photo:getFormattedMetadata( 'lens' ) )
-	add( settings.exifstamp_showFocal, cleanFocal( photo:getFormattedMetadata( 'focalLength' ) ) )
-	add( settings.exifstamp_showAperture, cleanAperture( photo:getFormattedMetadata( 'aperture' ) ) )
-	add( settings.exifstamp_showShutter, cleanShutter( photo:getFormattedMetadata( 'shutterSpeed' ) ) )
-	add( settings.exifstamp_showIso, photo:getFormattedMetadata( 'isoSpeedRating' ) )
+	add( settings.exifstamp_showCamera, meta.camera )
+	add( settings.exifstamp_showLens, meta.lens )
+	add( settings.exifstamp_showFocal, formatFocal( meta.focal ) )
+	add( settings.exifstamp_showAperture, formatAperture( meta.aperture ) )
+	add( settings.exifstamp_showShutter, formatShutter( meta.shutter ) )
+	add( settings.exifstamp_showIso, formatIso( meta.iso ) )
 
 	-- Join with a literal "\n" sequence: ImageMagick's -annotate interprets it
 	-- as a line break, so each item ends up on its own line.
@@ -203,7 +281,9 @@ function ExifStampFilter.postProcessRenderedPhotos( functionContext, filterConte
 	local settings = filterContext.propertyTable
 
 	local magick = findExistingFile( MAGICK_CANDIDATES )
+	local exiftool = findExistingFile( EXIFTOOL_CANDIDATES )
 	local fontPath = findExistingFile( FONT_CANDIDATES )
+	local tempDir = LrPathUtils.getStandardFilePath( 'temp' )
 	local errorShown = false
 
 	for sourceRendition, renditionToSatisfy in filterContext:renditions() do
@@ -212,15 +292,18 @@ function ExifStampFilter.postProcessRenderedPhotos( functionContext, filterConte
 		if success then
 			local filePath = pathOrMessage
 
-			if not magick or not fontPath then
+			if not magick or not exiftool or not fontPath then
 				if not errorShown then
 					errorShown = true
 					LrDialogs.showError(
-						'EXIF Stamp: не найден ImageMagick (brew install imagemagick) '
-						.. 'или системный шрифт. Фото экспортированы без надписи.' )
+						'EXIF Stamp: не найдены ImageMagick и exiftool '
+						.. '(brew install imagemagick exiftool) или системный шрифт. '
+						.. 'Фото экспортированы без надписи.' )
 				end
 			elseif isSupportedFile( filePath ) then
-				local text = buildStampText( sourceRendition.photo, settings )
+				local sourcePath = sourceRendition.photo:getRawMetadata( 'path' )
+				local meta = readMetadata( exiftool, sourcePath, tempDir )
+				local text = meta and buildStampText( meta, settings ) or ''
 				if text ~= '' then
 					stampPhoto( magick, fontPath, filePath, text, settings )
 				else

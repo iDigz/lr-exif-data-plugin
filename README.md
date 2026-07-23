@@ -4,7 +4,12 @@
 
 ## Требования
 
-- macOS, ImageMagick с freetype: `brew install imagemagick`
+- macOS
+- ImageMagick (с freetype) и exiftool: `brew install imagemagick exiftool`
+
+exiftool нужен, чтобы получить полные имена камеры и объектива из оригинального
+файла: Lightroom отдаёт только короткое имя объектива («RF24-70mm F2.8 L IS USM»),
+а exiftool — полное («Canon RF 24-70mm F2.8L IS USM»).
 
 ## Установка
 
