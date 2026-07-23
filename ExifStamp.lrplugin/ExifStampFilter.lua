@@ -236,8 +236,10 @@ end
 -- letters showing the photo through) and a right column of values, right-aligned.
 -- rh/sp/gap/sw/bp are strings: either plain numbers (preview) or shell variables
 -- like "$P" (export, where sizes depend on the image height measured in shell).
--- bp is the horizontal padding inside a badge.
-local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, bp )
+-- bp is the horizontal padding inside a badge. fitW/fitH limit the final block
+-- size: it is shrunk (never enlarged) to fit, so long lines in wide fonts do
+-- not get clipped at the image border.
+local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, bp, fitW, fitH )
 	local badgeColor, fillColor, strokeColor
 	if settings.exifstamp_color == 'black' then
 		badgeColor, fillColor, strokeColor = 'black', 'black', 'white'
@@ -277,8 +279,8 @@ local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, bp )
 	return string.format(
 		'\\( \\( %s -background none -gravity West -append \\) '
 		.. '\\( %s -background none -gravity East -append \\) '
-		.. '-background none +smush %s \\)',
-		table.concat( badges, ' ' ), table.concat( values, ' ' ), gap )
+		.. '-background none +smush %s -resize "%sx%s>" \\)',
+		table.concat( badges, ' ' ), table.concat( values, ' ' ), gap, fitW, fitH )
 end
 
 local function stampPhoto( magick, fontPath, filePath, rows, settings )
@@ -287,13 +289,17 @@ local function stampPhoto( magick, fontPath, filePath, rows, settings )
 	local quotedPath = '"' .. filePath .. '"'
 
 	-- Sizes are derived from the image height in shell: P is the row height,
-	-- S the outline width, SP the spacing between rows, GAP the minimum gap
-	-- between the badge column and the value column, BP the badge padding.
-	local blockClause = buildBlockClause( rows, fontPath, settings, '$P', '$SP', '$GAP', '$S', '$BP' )
+	-- S the outline width, SP the spacing between rows, GAP the gap between
+	-- the columns (about one space character), BP the badge padding.
+	-- MW/MH cap the block size so it never sticks out of the image.
+	local blockClause = buildBlockClause( rows, fontPath, settings,
+		'$P', '$SP', '$GAP', '$S', '$BP', '$MW', '$MH' )
 
 	local command = string.format(
-		'H=$(%s identify -format %%h %s); P=$((H*%d/1000)); [ "$P" -lt 8 ] && P=8; '
-		.. 'S=$((P/14+1)); SP=$((P/3)); GAP=$P; BP=$((P/2)); '
+		'WH=$(%s identify -format "%%w %%h" %s); W=${WH%%%% *}; H=${WH##* }; '
+		.. 'P=$((H*%d/1000)); [ "$P" -lt 8 ] && P=8; '
+		.. 'S=$((P/14+1)); SP=$((P/3)); GAP=$((P/2)); BP=$((P/8+1)); '
+		.. 'MW=$((W-P*2)); MH=$((H-P*2)); '
 		.. '%s %s %s -gravity %s -geometry "+$P+$P" -compose over -composite %s',
 		magick, quotedPath, size,
 		magick, quotedPath, blockClause, gravity, quotedPath
@@ -355,7 +361,8 @@ local function generatePreview( propertyTable, openAfter )
 		if #rows > 0 then
 			blockClause = buildBlockClause( rows, fontPath, settings,
 				tostring( rowHeight ), tostring( math.floor( rowHeight / 4 ) ),
-				tostring( rowHeight ), '2', tostring( math.floor( rowHeight / 2 ) ) )
+				tostring( math.floor( rowHeight / 2 ) ), '2',
+				tostring( math.floor( rowHeight / 8 ) + 1 ), '348', '228' )
 				.. string.format( ' -gravity %s -geometry +16+16 -compose over -composite', gravity )
 		end
 

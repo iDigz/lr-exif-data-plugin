@@ -50,8 +50,9 @@ local settings = { exifstamp_color = color,
 	exifstamp_showAperture = true, exifstamp_showShutter = true, exifstamp_showIso = true }
 
 local rows = t.buildStampRows( meta, settings )
-local clause = t.buildBlockClause( rows, '/System/Library/Fonts/Helvetica.ttc', settings,
-	'17', '4', '17', '2', '8' )
+local fontPath = arg[4] or '/System/Library/Fonts/Helvetica.ttc'
+local clause = t.buildBlockClause( rows, fontPath, settings,
+	'17', '4', '8', '2', '3', '348', '228' )
 local cmd = string.format(
 	'/opt/homebrew/bin/magick -size 380x260 gradient:gray25-gray70 %s '
 	.. '-gravity %s -geometry +16+16 -compose over -composite "%s"',
