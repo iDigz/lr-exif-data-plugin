@@ -271,14 +271,21 @@ local SAMPLE_META = {
 }
 
 -- Each preview goes to a new file so the dialog's picture reloads instead of
--- showing a cached image.
+-- showing a cached image. Files live inside the plugin folder because
+-- f:picture documents its value as "file or resource name from the plug-in".
 local previewCounter = 0
+
+-- Reference to the f:picture view of the currently open dialog. f:picture is
+-- not documented as bindable, so besides the property binding we also assign
+-- the new path straight to the view object (wrapped in pcall).
+local previewPictureView = nil
 
 -- Draw the EXIF block with sample data onto a small gradient swatch and point
 -- the dialog picture at the result. Runs only in the export dialog, so any
 -- failure here never affects the actual export. The point size is bigger than
 -- the real ‰-of-height value so the text stays readable on the small swatch.
-local function generatePreview( propertyTable )
+-- With openAfter = true the result is also opened in Preview.app.
+local function generatePreview( propertyTable, openAfter )
 	local magick = findExistingFile( MAGICK_CANDIDATES )
 	if not magick then
 		return
@@ -304,8 +311,7 @@ local function generatePreview( propertyTable )
 		local quotedText = shellQuote( text )
 
 		previewCounter = previewCounter + 1
-		local outPath = LrPathUtils.child(
-			LrPathUtils.getStandardFilePath( 'temp' ),
+		local outPath = LrPathUtils.child( _PLUGIN.path,
 			'exifstamp_preview_' .. previewCounter .. '.jpg' )
 
 		local command = string.format(
@@ -318,19 +324,43 @@ local function generatePreview( propertyTable )
 
 		logger:trace( 'preview exec: ' .. command )
 		local exitCode = LrTasks.execute( command )
-		if exitCode == 0 then
-			settings.exifstamp_previewPath = outPath
-		else
+		if exitCode ~= 0 then
 			logger:error( 'preview magick failed with code ' .. tostring( exitCode ) )
+			return
+		end
+
+		-- Update through the binding and directly on the view object; either
+		-- mechanism may be the one that actually refreshes the picture.
+		settings.exifstamp_previewPath = outPath
+		if previewPictureView then
+			pcall( function() previewPictureView.value = outPath end )
+		end
+
+		-- Drop the previous preview file so the plugin folder does not grow.
+		local previousPath = LrPathUtils.child( _PLUGIN.path,
+			'exifstamp_preview_' .. ( previewCounter - 1 ) .. '.jpg' )
+		LrFileUtils.delete( previousPath )
+
+		if openAfter then
+			LrTasks.execute( 'open "' .. outPath .. '"' )
 		end
 	end )
 end
 
 function ExifStampFilter.sectionForFilterInDialog( f, propertyTable )
-	-- Set up the live preview once per dialog.
+	-- Start with the static sample shipped inside the plugin so the picture is
+	-- never empty, then let generatePreview replace it with the styled one.
+	propertyTable.exifstamp_previewPath = LrPathUtils.child( _PLUGIN.path, 'sample-preview.jpg' )
+
+	-- The view is recreated on every dialog open; keep the fresh reference.
+	previewPictureView = f:picture {
+		value = bind 'exifstamp_previewPath',
+		frame_width = 1,
+	}
+
+	-- Set up preview regeneration once per property table.
 	if not propertyTable._exifstampReady then
 		propertyTable._exifstampReady = true
-		propertyTable.exifstamp_previewPath = ''
 
 		local observedKeys = {
 			'exifstamp_enabled', 'exifstamp_corner', 'exifstamp_fontSize',
@@ -343,9 +373,9 @@ function ExifStampFilter.sectionForFilterInDialog( f, propertyTable )
 				generatePreview( propertyTable )
 			end )
 		end
-
-		generatePreview( propertyTable )
 	end
+
+	generatePreview( propertyTable )
 
 	return {
 		title = 'EXIF Stamp',
@@ -425,10 +455,12 @@ function ExifStampFilter.sectionForFilterInDialog( f, propertyTable )
 			f:spacer { height = 6 },
 
 			f:static_text { title = 'Предпросмотр (пример данных):' },
-			f:picture {
-				value = bind 'exifstamp_previewPath',
-				frame_width = 380,
-				frame_height = 260,
+			previewPictureView,
+			f:push_button {
+				title = 'Открыть пример',
+				action = function()
+					generatePreview( propertyTable, true )
+				end,
 			},
 		},
 	}
