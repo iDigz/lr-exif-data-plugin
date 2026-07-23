@@ -302,7 +302,7 @@ local function stampPhoto( magick, fontPath, filePath, rows, settings )
 	local command = string.format(
 		'WH=$(%s identify -format "%%w %%h" %s); W=${WH%%%% *}; H=${WH##* }; '
 		.. 'P=$((H*%d/1000)); [ "$P" -lt 8 ] && P=8; '
-		.. 'S=$((P/14+1)); SP=$((P/6)); GAP=$((P/2)); BP=$((P/8+1)); BH=$((P*4/5)); '
+		.. 'S=$((P/14+1)); SP=$((P/12)); GAP=$((P/2)); BP=$((P/8+1)); BH=$((P*4/5)); '
 		.. 'MW=$((W-P*2)); MH=$((H-P*2)); '
 		.. '%s %s %s -gravity %s -geometry "+$P+$P" -compose over -composite %s',
 		magick, quotedPath, size,
@@ -364,7 +364,7 @@ local function generatePreview( propertyTable, openAfter )
 		local blockClause = ''
 		if #rows > 0 then
 			blockClause = buildBlockClause( rows, fontPath, settings,
-				tostring( rowHeight ), tostring( math.floor( rowHeight / 6 ) ),
+				tostring( rowHeight ), tostring( math.floor( rowHeight / 12 ) ),
 				tostring( math.floor( rowHeight / 2 ) ), '2',
 				tostring( math.floor( rowHeight / 8 ) + 1 ),
 				tostring( math.floor( rowHeight * 4 / 5 ) ), '348', '228' )
