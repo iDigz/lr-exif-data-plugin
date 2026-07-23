@@ -13,6 +13,7 @@ local LrFileUtils = import 'LrFileUtils'
 local LrPathUtils = import 'LrPathUtils'
 local LrDialogs = import 'LrDialogs'
 local LrLogger = import 'LrLogger'
+local LrApplication = import 'LrApplication'
 
 local logger = LrLogger('ExifStamp')
 logger:enable('logfile')
@@ -34,6 +35,30 @@ local FONT_CANDIDATES = {
 	'/System/Library/Fonts/Monaco.ttf',
 }
 
+local DEFAULT_FONT = '/System/Library/Fonts/Helvetica.ttc'
+
+-- Curated list of good caption fonts. Only the ones present on the machine are
+-- shown in the dialog. Order here is the order in the popup menu.
+local FONT_CHOICES = {
+	{ title = 'Helvetica', path = '/System/Library/Fonts/Helvetica.ttc' },
+	{ title = 'Helvetica Neue', path = '/System/Library/Fonts/HelveticaNeue.ttc' },
+	{ title = 'San Francisco', path = '/System/Library/Fonts/SFNS.ttf' },
+	{ title = 'SF Mono', path = '/System/Library/Fonts/SFNSMono.ttf' },
+	{ title = 'Avenir', path = '/System/Library/Fonts/Avenir.ttc' },
+	{ title = 'Avenir Next', path = '/System/Library/Fonts/Avenir Next.ttc' },
+	{ title = 'Arial', path = '/System/Library/Fonts/ArialHB.ttc' },
+	{ title = 'Futura', path = '/System/Library/Fonts/Supplemental/Futura.ttc' },
+	{ title = 'Gill Sans', path = '/System/Library/Fonts/Supplemental/GillSans.ttc' },
+	{ title = 'Optima', path = '/System/Library/Fonts/Optima.ttc' },
+	{ title = 'Menlo', path = '/System/Library/Fonts/Menlo.ttc' },
+	{ title = 'Monaco', path = '/System/Library/Fonts/Monaco.ttf' },
+	{ title = 'Courier', path = '/System/Library/Fonts/Courier.ttc' },
+	{ title = 'Georgia', path = '/System/Library/Fonts/Supplemental/Georgia.ttf' },
+	{ title = 'Times New Roman', path = '/System/Library/Fonts/Supplemental/Times New Roman.ttf' },
+	{ title = 'Palatino', path = '/System/Library/Fonts/Palatino.ttc' },
+	{ title = 'Baskerville', path = '/System/Library/Fonts/Supplemental/Baskerville.ttc' },
+}
+
 local SUPPORTED_EXTENSIONS = { jpg = true, jpeg = true, png = true, tif = true, tiff = true }
 
 local ExifStampFilter = {}
@@ -42,6 +67,7 @@ ExifStampFilter.exportPresetFields = {
 	{ key = 'exifstamp_enabled', default = true },
 	{ key = 'exifstamp_corner', default = 'SouthEast' },
 	{ key = 'exifstamp_fontSize', default = 9 },     -- text height, 1/1000 of image height
+	{ key = 'exifstamp_font', default = DEFAULT_FONT },
 	{ key = 'exifstamp_color', default = 'white' },
 	{ key = 'exifstamp_showCamera', default = true },
 	{ key = 'exifstamp_showLens', default = true },
@@ -63,6 +89,26 @@ end
 local function isSupportedFile( path )
 	local extension = string.lower( LrPathUtils.extension( path ) or '' )
 	return SUPPORTED_EXTENSIONS[ extension ] == true
+end
+
+-- Popup items for every curated font that exists on this machine.
+local function buildFontItems()
+	local items = {}
+	for _, font in ipairs( FONT_CHOICES ) do
+		if LrFileUtils.exists( font.path ) then
+			items[ #items + 1 ] = { title = font.title, value = font.path }
+		end
+	end
+	return items
+end
+
+-- The font chosen in the dialog, or a safe fallback if it is missing.
+local function resolveFont( settings )
+	local path = settings.exifstamp_font
+	if path and LrFileUtils.exists( path ) then
+		return path
+	end
+	return findExistingFile( FONT_CANDIDATES )
 end
 
 local function trim( value )
@@ -214,7 +260,79 @@ local function stampPhoto( magick, fontPath, filePath, text, settings )
 	return exitCode == 0
 end
 
+-- Each preview goes to a new file so the dialog's picture reloads instead of
+-- showing a cached image.
+local previewCounter = 0
+
+-- Build a small preview: take the selected photo's thumbnail, stamp it with the
+-- current settings and point the dialog picture at the result. Runs only in the
+-- export dialog, so a failure here never affects the actual export.
+local function generatePreview( propertyTable )
+	local magick = findExistingFile( MAGICK_CANDIDATES )
+	local exiftool = findExistingFile( EXIFTOOL_CANDIDATES )
+	if not magick or not exiftool then
+		return
+	end
+
+	local photo = LrApplication.activeCatalog():getTargetPhoto()
+	if not photo then
+		return
+	end
+
+	local tempDir = LrPathUtils.getStandardFilePath( 'temp' )
+	local settings = propertyTable
+
+	photo:requestJpegThumbnail( 500, 400, function( jpegData, errorMsg )
+		if not jpegData then
+			logger:trace( 'preview thumbnail failed: ' .. tostring( errorMsg ) )
+			return
+		end
+
+		LrTasks.startAsyncTask( function()
+			previewCounter = previewCounter + 1
+			local outPath = LrPathUtils.child( tempDir, 'exifstamp_preview_' .. previewCounter .. '.jpg' )
+
+			local file = io.open( outPath, 'wb' )
+			if not file then
+				return
+			end
+			file:write( jpegData )
+			file:close()
+
+			if settings.exifstamp_enabled then
+				local meta = readMetadata( exiftool, photo:getRawMetadata( 'path' ), tempDir )
+				local text = meta and buildStampText( meta, settings ) or ''
+				if text ~= '' then
+					stampPhoto( magick, resolveFont( settings ), outPath, text, settings )
+				end
+			end
+
+			settings.exifstamp_previewPath = outPath
+		end )
+	end )
+end
+
 function ExifStampFilter.sectionForFilterInDialog( f, propertyTable )
+	-- Set up the live preview once per dialog.
+	if not propertyTable._exifstampReady then
+		propertyTable._exifstampReady = true
+		propertyTable.exifstamp_previewPath = ''
+
+		local observedKeys = {
+			'exifstamp_enabled', 'exifstamp_corner', 'exifstamp_fontSize',
+			'exifstamp_font', 'exifstamp_color',
+			'exifstamp_showCamera', 'exifstamp_showLens', 'exifstamp_showFocal',
+			'exifstamp_showAperture', 'exifstamp_showShutter', 'exifstamp_showIso',
+		}
+		for _, key in ipairs( observedKeys ) do
+			propertyTable:addObserver( key, function()
+				generatePreview( propertyTable )
+			end )
+		end
+
+		generatePreview( propertyTable )
+	end
+
 	return {
 		title = 'EXIF Stamp',
 
@@ -255,6 +373,14 @@ function ExifStampFilter.sectionForFilterInDialog( f, propertyTable )
 			},
 
 			f:row {
+				f:static_text { title = 'Шрифт:', width = LrView.share 'exifstamp_label' },
+				f:popup_menu {
+					value = bind 'exifstamp_font',
+					items = buildFontItems(),
+				},
+			},
+
+			f:row {
 				f:static_text { title = 'Цвет:', width = LrView.share 'exifstamp_label' },
 				f:popup_menu {
 					value = bind 'exifstamp_color',
@@ -280,6 +406,15 @@ function ExifStampFilter.sectionForFilterInDialog( f, propertyTable )
 						f:checkbox { title = 'ISO', value = bind 'exifstamp_showIso' },
 					},
 				},
+			},
+
+			f:spacer { height = 6 },
+
+			f:static_text { title = 'Предпросмотр (выделенное фото):' },
+			f:picture {
+				value = bind 'exifstamp_previewPath',
+				frame_width = 250,
+				frame_height = 180,
 			},
 		},
 	}
