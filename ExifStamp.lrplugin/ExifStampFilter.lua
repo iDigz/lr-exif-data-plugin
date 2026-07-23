@@ -39,6 +39,7 @@ local SUPPORTED_EXTENSIONS = { jpg = true, jpeg = true, png = true, tif = true, 
 local ExifStampFilter = {}
 
 ExifStampFilter.exportPresetFields = {
+	{ key = 'exifstamp_enabled', default = true },
 	{ key = 'exifstamp_corner', default = 'SouthEast' },
 	{ key = 'exifstamp_fontSize', default = 9 },     -- text height, 1/1000 of image height
 	{ key = 'exifstamp_color', default = 'white' },
@@ -222,6 +223,13 @@ function ExifStampFilter.sectionForFilterInDialog( f, propertyTable )
 			spacing = f:control_spacing(),
 
 			f:row {
+				f:checkbox {
+					title = 'Накладывать EXIF на фото',
+					value = bind 'exifstamp_enabled',
+				},
+			},
+
+			f:row {
 				f:static_text { title = 'Угол:', width = LrView.share 'exifstamp_label' },
 				f:popup_menu {
 					value = bind 'exifstamp_corner',
@@ -279,6 +287,15 @@ end
 
 function ExifStampFilter.postProcessRenderedPhotos( functionContext, filterContext )
 	local settings = filterContext.propertyTable
+
+	-- Filter disabled: let every photo pass through untouched. We still have to
+	-- wait for each rendition so the export pipeline can finish.
+	if not settings.exifstamp_enabled then
+		for sourceRendition in filterContext:renditions() do
+			sourceRendition:waitForRender()
+		end
+		return
+	end
 
 	local magick = findExistingFile( MAGICK_CANDIDATES )
 	local exiftool = findExistingFile( EXIFTOOL_CANDIDATES )
