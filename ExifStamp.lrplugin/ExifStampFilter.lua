@@ -177,47 +177,53 @@ local function readMetadata( exiftool, sourcePath, tempDir )
 	}
 end
 
--- Turn raw exiftool values into compact display strings.
-local function formatFocal( value )
-	if not value then return nil end
-	value = string.gsub( value, '%.0$', '' )   -- "50.0" -> "50"
-	return value .. 'mm'
+local ROMAN_VERSIONS = { ['2'] = 'II', ['3'] = 'III', ['4'] = 'IV', ['5'] = 'V' }
+
+-- Shorten camera model for display: "Canon EOS R5m2" -> "Canon R5 M II".
+local function prettyCamera( model )
+	if not model then return nil end
+	local name = string.gsub( model, 'EOS%s*', '' )
+	name = string.gsub( name, '(%w+)[mM](%d)$', function( base, version )
+		return base .. ' M ' .. ( ROMAN_VERSIONS[ version ] or version )
+	end )
+	return trim( name )
 end
 
-local function formatAperture( value )
-	if not value then return nil end
-	return 'f/' .. value
+-- Shorten lens name: keep everything up to the aperture token and drop "mm":
+-- "Canon RF 24-70mm F2.8L IS USM" -> "Canon RF 24-70 F2.8L".
+-- A lens without an "F..." token is returned as-is.
+local function prettyLens( lens )
+	if not lens then return nil end
+	local words = {}
+	for rawWord in string.gmatch( lens, '%S+' ) do
+		local word = string.gsub( rawWord, '^(%d+%-?%d*)mm$', '%1' )
+		words[ #words + 1 ] = word
+		if string.match( word, '^F[%d%.]' ) then
+			break
+		end
+	end
+	return table.concat( words, ' ' )
 end
 
-local function formatShutter( value )
-	if not value then return nil end
-	return value .. 's'
-end
+-- Rows of the stamp block: left badge label + right value.
+local function buildStampRows( meta, settings )
+	local rows = {}
 
-local function formatIso( value )
-	if not value then return nil end
-	return 'ISO ' .. value
-end
-
-local function buildStampText( meta, settings )
-	local parts = {}
-
-	local function add( enabled, value )
+	local function add( enabled, label, value )
 		if enabled and value then
-			parts[ #parts + 1 ] = value
+			rows[ #rows + 1 ] = { label = label, value = value }
 		end
 	end
 
-	add( settings.exifstamp_showCamera, meta.camera )
-	add( settings.exifstamp_showLens, meta.lens )
-	add( settings.exifstamp_showFocal, formatFocal( meta.focal ) )
-	add( settings.exifstamp_showAperture, formatAperture( meta.aperture ) )
-	add( settings.exifstamp_showShutter, formatShutter( meta.shutter ) )
-	add( settings.exifstamp_showIso, formatIso( meta.iso ) )
+	add( settings.exifstamp_showCamera, 'CAM', prettyCamera( meta.camera ) )
+	add( settings.exifstamp_showLens, 'LENS', prettyLens( meta.lens ) )
+	add( settings.exifstamp_showFocal, 'FOCAL',
+		meta.focal and string.gsub( meta.focal, '%.0$', '' ) .. 'mm' or nil )
+	add( settings.exifstamp_showAperture, 'APERTURE', meta.aperture and 'f/' .. meta.aperture or nil )
+	add( settings.exifstamp_showShutter, 'SHUTTER', meta.shutter and meta.shutter .. 's' or nil )
+	add( settings.exifstamp_showIso, 'ISO', meta.iso )
 
-	-- Join with a literal "\n" sequence: ImageMagick's -annotate interprets it
-	-- as a line break, so each item ends up on its own line.
-	return table.concat( parts, '\\n' )
+	return rows
 end
 
 -- Wrap text in single quotes for /bin/sh: ' becomes '\''
@@ -225,30 +231,69 @@ local function shellQuote( text )
 	return "'" .. string.gsub( text, "'", "'\\''" ) .. "'"
 end
 
-local function stampPhoto( magick, fontPath, filePath, text, settings )
-	local fillColor, strokeColor
+-- Build the ImageMagick clause that renders the whole stamp block as one image
+-- with transparency: a left column of badges (filled rectangles with knockout
+-- letters showing the photo through) and a right column of values, right-aligned.
+-- rh/sp/gap/sw are strings: either plain numbers (preview) or shell variables
+-- like "$P" (export, where sizes depend on the image height measured in shell).
+local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw )
+	local badgeColor, fillColor, strokeColor
 	if settings.exifstamp_color == 'black' then
-		fillColor, strokeColor = 'black', 'white'
+		badgeColor, fillColor, strokeColor = 'black', 'black', 'white'
 	else
-		fillColor, strokeColor = 'white', 'black'
+		badgeColor, fillColor, strokeColor = 'white', 'white', 'black'
 	end
 
+	-- Parentheses are escaped as \( \) because the command runs through /bin/sh.
+	local badges, values = {}, {}
+	local spacer = string.format( '\\( -size 1x%s xc:none \\)', sp )
+
+	for i, row in ipairs( rows ) do
+		if i > 1 then
+			badges[ #badges + 1 ] = spacer
+			values[ #values + 1 ] = spacer
+		end
+
+		-- Badge: render label white-on-black, negate, turn brightness into
+		-- alpha (letters transparent, box opaque), then paint the box.
+		badges[ #badges + 1 ] = string.format(
+			'\\( -background black -fill white -font "%s" -size x%s label:%s '
+			.. '-negate -alpha copy -fill %s -colorize 100 \\)',
+			fontPath, rh, shellQuote( ' ' .. row.label .. ' ' ), badgeColor )
+
+		-- Value: outline pass + clean fill pass on top.
+		local quotedValue = shellQuote( row.value )
+		values[ #values + 1 ] = string.format(
+			'\\( \\( -background none -fill %s -stroke %s -strokewidth %s -font "%s" -size x%s label:%s \\) '
+			.. '\\( -background none -fill %s -stroke none -font "%s" -size x%s label:%s \\) '
+			.. '-background none -gravity center -compose over -composite \\)',
+			fillColor, strokeColor, sw, fontPath, rh, quotedValue,
+			fillColor, fontPath, rh, quotedValue )
+	end
+
+	return string.format(
+		'\\( \\( %s -background none -gravity West -append \\) '
+		.. '\\( %s -background none -gravity East -append \\) '
+		.. '-background none +smush %s \\)',
+		table.concat( badges, ' ' ), table.concat( values, ' ' ), gap )
+end
+
+local function stampPhoto( magick, fontPath, filePath, rows, settings )
 	local size = tonumber( settings.exifstamp_fontSize ) or 9
 	local gravity = settings.exifstamp_corner or 'SouthEast'
 	local quotedPath = '"' .. filePath .. '"'
-	local quotedText = shellQuote( text )
 
-	-- One shell line: measure image height, derive point size, padding and
-	-- stroke width, then draw the text twice (outline pass + fill pass).
+	-- Sizes are derived from the image height in shell: P is the row height,
+	-- S the outline width, SP the spacing between rows, GAP the minimum gap
+	-- between the badge column and the value column.
+	local blockClause = buildBlockClause( rows, fontPath, settings, '$P', '$SP', '$GAP', '$S' )
+
 	local command = string.format(
-		'H=$(%s identify -format %%h %s); P=$((H*%d/1000)); [ "$P" -lt 8 ] && P=8; S=$((P/14+1)); '
-		.. '%s %s -gravity %s -font "%s" -pointsize "$P" -interline-spacing "$((P/3))" '
-		.. '-stroke %s -strokewidth "$S" -fill %s -annotate "+$P+$P" %s '
-		.. '-stroke none -fill %s -annotate "+$P+$P" %s %s',
+		'H=$(%s identify -format %%h %s); P=$((H*%d/1000)); [ "$P" -lt 8 ] && P=8; '
+		.. 'S=$((P/14+1)); SP=$((P/3)); GAP=$((P*2)); '
+		.. '%s %s %s -gravity %s -geometry "+$P+$P" -compose over -composite %s',
 		magick, quotedPath, size,
-		magick, quotedPath, gravity, fontPath,
-		strokeColor, fillColor, quotedText,
-		fillColor, quotedText, quotedPath
+		magick, quotedPath, blockClause, gravity, quotedPath
 	)
 
 	logger:trace( 'exec: ' .. command )
@@ -293,34 +338,27 @@ local function generatePreview( propertyTable, openAfter )
 	local settings = propertyTable
 
 	LrTasks.startAsyncTask( function()
-		local text = buildStampText( SAMPLE_META, settings )
-		if text == '' then
-			text = 'Нет выбранных полей'
-		end
+		local rows = buildStampRows( SAMPLE_META, settings )
 
-		local fillColor, strokeColor
-		if settings.exifstamp_color == 'black' then
-			fillColor, strokeColor = 'black', 'white'
-		else
-			fillColor, strokeColor = 'white', 'black'
-		end
-
-		local pointSize = ( tonumber( settings.exifstamp_fontSize ) or 9 ) + 8
+		local rowHeight = ( tonumber( settings.exifstamp_fontSize ) or 9 ) + 8
 		local gravity = settings.exifstamp_corner or 'SouthEast'
 		local fontPath = resolveFont( settings )
-		local quotedText = shellQuote( text )
 
 		previewCounter = previewCounter + 1
 		local outPath = LrPathUtils.child( _PLUGIN.path,
 			'exifstamp_preview_' .. previewCounter .. '.jpg' )
 
+		local blockClause = ''
+		if #rows > 0 then
+			blockClause = buildBlockClause( rows, fontPath, settings,
+				tostring( rowHeight ), tostring( math.floor( rowHeight / 4 ) ),
+				tostring( rowHeight * 2 ), '2' )
+				.. string.format( ' -gravity %s -geometry +16+16 -compose over -composite', gravity )
+		end
+
 		local command = string.format(
-			'%s -size 380x260 gradient:gray25-gray70 -gravity %s -font "%s" -pointsize %d '
-			.. '-interline-spacing %d -stroke %s -strokewidth 2 -fill %s -annotate +16+16 %s '
-			.. '-stroke none -fill %s -annotate +16+16 %s "%s"',
-			magick, gravity, fontPath, pointSize,
-			math.floor( pointSize / 3 ), strokeColor, fillColor, quotedText,
-			fillColor, quotedText, outPath )
+			'%s -size 380x260 gradient:gray25-gray70 %s "%s"',
+			magick, blockClause, outPath )
 
 		logger:trace( 'preview exec: ' .. command )
 		local exitCode = LrTasks.execute( command )
@@ -501,9 +539,9 @@ function ExifStampFilter.postProcessRenderedPhotos( functionContext, filterConte
 			elseif isSupportedFile( filePath ) then
 				local sourcePath = sourceRendition.photo:getRawMetadata( 'path' )
 				local meta = readMetadata( exiftool, sourcePath, tempDir )
-				local text = meta and buildStampText( meta, settings ) or ''
-				if text ~= '' then
-					stampPhoto( magick, fontPath, filePath, text, settings )
+				local rows = meta and buildStampRows( meta, settings ) or {}
+				if #rows > 0 then
+					stampPhoto( magick, resolveFont( settings ), filePath, rows, settings )
 				else
 					logger:trace( 'no EXIF data for ' .. filePath .. ', skipped' )
 				end
@@ -515,5 +553,13 @@ function ExifStampFilter.postProcessRenderedPhotos( functionContext, filterConte
 		end
 	end
 end
+
+-- Internal functions exposed for testing outside Lightroom (see tests/).
+ExifStampFilter._test = {
+	prettyCamera = prettyCamera,
+	prettyLens = prettyLens,
+	buildStampRows = buildStampRows,
+	buildBlockClause = buildBlockClause,
+}
 
 return ExifStampFilter
