@@ -234,12 +234,14 @@ end
 -- Build the ImageMagick clause that renders the whole stamp block as one image
 -- with transparency: a left column of badges (filled rectangles with knockout
 -- letters showing the photo through) and a right column of values, right-aligned.
--- rh/sp/gap/sw/bp are strings: either plain numbers (preview) or shell variables
--- like "$P" (export, where sizes depend on the image height measured in shell).
--- bp is the horizontal padding inside a badge. fitW/fitH limit the final block
--- size: it is shrunk (never enlarged) to fit, so long lines in wide fonts do
--- not get clipped at the image border.
-local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, bp, fitW, fitH )
+-- rh/sp/gap/sw/bp/bh are strings: either plain numbers (preview) or shell
+-- variables like "$P" (export, where sizes depend on the image height measured
+-- in shell). bp is the horizontal padding inside a badge, bh the badge box
+-- height (smaller than the row height rh; the badge is padded back to rh with
+-- transparent margins so both columns keep identical row heights).
+-- fitW/fitH limit the final block size: it is shrunk (never enlarged) to fit,
+-- so long lines in wide fonts do not get clipped at the image border.
+local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, bp, bh, fitW, fitH )
 	local badgeColor, fillColor, strokeColor
 	if settings.exifstamp_color == 'black' then
 		badgeColor, fillColor, strokeColor = 'black', 'black', 'white'
@@ -258,13 +260,15 @@ local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, bp, 
 		end
 
 		-- Badge: render the label, trim to the glyphs, center it inside the
-		-- full-height box via -extent, then negate + alpha-copy so the letters
-		-- become transparent holes and paint the box itself.
+		-- badge box via -extent, then negate + alpha-copy so the letters become
+		-- transparent holes and paint the box. Finally pad the badge back to
+		-- the full row height with transparent margins.
 		badges[ #badges + 1 ] = string.format(
 			'\\( -background black -fill white -font "%s" -size x%s label:%s '
 			.. '-trim +repage -gravity center -extent "%%[fx:w+%s*2]x%s" '
-			.. '-negate -alpha copy -fill %s -colorize 100 \\)',
-			fontPath, rh, shellQuote( row.label ), bp, rh, badgeColor )
+			.. '-negate -alpha copy -fill %s -colorize 100 '
+			.. '-background none -extent "%%[fx:w]x%s" \\)',
+			fontPath, rh, shellQuote( row.label ), bp, bh, badgeColor, rh )
 
 		-- Value: outline pass + clean fill pass on top.
 		local quotedValue = shellQuote( row.value )
@@ -293,12 +297,12 @@ local function stampPhoto( magick, fontPath, filePath, rows, settings )
 	-- the columns (about one space character), BP the badge padding.
 	-- MW/MH cap the block size so it never sticks out of the image.
 	local blockClause = buildBlockClause( rows, fontPath, settings,
-		'$P', '$SP', '$GAP', '$S', '$BP', '$MW', '$MH' )
+		'$P', '$SP', '$GAP', '$S', '$BP', '$BH', '$MW', '$MH' )
 
 	local command = string.format(
 		'WH=$(%s identify -format "%%w %%h" %s); W=${WH%%%% *}; H=${WH##* }; '
 		.. 'P=$((H*%d/1000)); [ "$P" -lt 8 ] && P=8; '
-		.. 'S=$((P/14+1)); SP=$((P/3)); GAP=$((P/2)); BP=$((P/8+1)); '
+		.. 'S=$((P/14+1)); SP=$((P/6)); GAP=$((P/2)); BP=$((P/8+1)); BH=$((P*4/5)); '
 		.. 'MW=$((W-P*2)); MH=$((H-P*2)); '
 		.. '%s %s %s -gravity %s -geometry "+$P+$P" -compose over -composite %s',
 		magick, quotedPath, size,
@@ -360,9 +364,10 @@ local function generatePreview( propertyTable, openAfter )
 		local blockClause = ''
 		if #rows > 0 then
 			blockClause = buildBlockClause( rows, fontPath, settings,
-				tostring( rowHeight ), tostring( math.floor( rowHeight / 4 ) ),
+				tostring( rowHeight ), tostring( math.floor( rowHeight / 6 ) ),
 				tostring( math.floor( rowHeight / 2 ) ), '2',
-				tostring( math.floor( rowHeight / 8 ) + 1 ), '348', '228' )
+				tostring( math.floor( rowHeight / 8 ) + 1 ),
+				tostring( math.floor( rowHeight * 4 / 5 ) ), '348', '228' )
 				.. string.format( ' -gravity %s -geometry +16+16 -compose over -composite', gravity )
 		end
 
