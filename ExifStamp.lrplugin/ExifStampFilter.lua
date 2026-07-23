@@ -263,12 +263,15 @@ local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, bp, 
 		-- badge box via -extent, then negate + alpha-copy so the letters become
 		-- transparent holes and paint the box. Finally pad the badge back to
 		-- the full row height with transparent margins.
+		-- The stroke thickens the glyphs (faux bold) — works with any font,
+		-- unlike selecting a real bold face inside a .ttc file.
 		badges[ #badges + 1 ] = string.format(
-			'\\( -background black -fill white -font "%s" -size x%s label:%s '
+			'\\( -background black -fill white -stroke white -strokewidth %s '
+			.. '-font "%s" -size x%s label:%s '
 			.. '-trim +repage -gravity center -extent "%%[fx:w+%s*2]x%s" '
 			.. '-negate -alpha copy -fill %s -colorize 100 '
 			.. '-background none -extent "%%[fx:w]x%s" \\)',
-			fontPath, rh, shellQuote( row.label ), bp, bh, badgeColor, rh )
+			sw, fontPath, rh, shellQuote( row.label ), bp, bh, badgeColor, rh )
 
 		-- Value: outline pass + clean fill pass on top.
 		local quotedValue = shellQuote( row.value )
