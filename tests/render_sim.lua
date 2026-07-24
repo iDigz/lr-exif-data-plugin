@@ -30,9 +30,10 @@ local checks = {
 	{ t.prettyCamera( 'Canon EOS R5m2' ), 'Canon R5 M II' },
 	{ t.prettyCamera( 'Canon EOS R6m3' ), 'Canon R6 M III' },
 	{ t.prettyCamera( 'Canon EOS R5' ), 'Canon R5' },
-	{ t.prettyLens( 'Canon RF 24-70mm F2.8L IS USM' ), 'Canon RF 24-70 F2.8L' },
-	{ t.prettyLens( 'Canon RF 100-500mm F4.5-7.1L IS USM' ), 'Canon RF 100-500 F4.5-7.1L' },
-	{ t.prettyLens( 'FE 35mm F1.8' ), 'FE 35 F1.8' },
+	{ t.prettyLens( 'Canon RF 24-70mm F2.8L IS USM' ), 'Canon RF 24-70' },
+	{ t.prettyLens( 'Canon RF 100-500mm F4.5-7.1L IS USM' ), 'Canon RF 100-500' },
+	{ t.prettyLens( 'FE 35mm F1.8' ), 'FE 35' },
+	{ t.prettyLens( 'Canon EF 100mm f/2.8L Macro IS USM' ), 'Canon EF 100' },
 }
 for i, c in ipairs( checks ) do
 	if c[1] ~= c[2] then

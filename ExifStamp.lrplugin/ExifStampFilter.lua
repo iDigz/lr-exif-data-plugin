@@ -189,18 +189,23 @@ local function prettyCamera( model )
 	return trim( name )
 end
 
--- Shorten lens name: keep everything up to the aperture token and drop "mm":
--- "Canon RF 24-70mm F2.8L IS USM" -> "Canon RF 24-70 F2.8L".
--- A lens without an "F..." token is returned as-is.
+-- Shorten lens name: keep everything up to the focal range and drop "mm":
+-- "Canon RF 100-500mm F4.5-7.1L IS USM" -> "Canon RF 100-500".
+-- A lens without a focal/aperture token is returned as-is.
 local function prettyLens( lens )
 	if not lens then return nil end
 	local words = {}
 	for rawWord in string.gmatch( lens, '%S+' ) do
-		local word = string.gsub( rawWord, '^(%d+%-?%d*)mm$', '%1' )
-		words[ #words + 1 ] = word
-		if string.match( word, '^F[%d%.]' ) then
+		local focal = string.match( rawWord, '^(%d+%-?%d*)mm$' )
+		if focal then
+			words[ #words + 1 ] = focal
 			break
 		end
+		-- Aperture token ("F2.8L", "f/2.8") — everything from here on is noise.
+		if string.match( rawWord, '^[Ff]/?%d' ) then
+			break
+		end
+		words[ #words + 1 ] = rawWord
 	end
 	return table.concat( words, ' ' )
 end
