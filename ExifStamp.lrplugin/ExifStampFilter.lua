@@ -265,9 +265,12 @@ end
 -- the chosen corner. rh/sp/gap/sw are strings: either plain numbers (preview)
 -- or shell variables like "$P" (export, where sizes depend on the image height
 -- measured in shell). gap is the space between the icon and the text.
--- fitW/fitH limit the final block size: it is shrunk (never enlarged) to fit,
--- so long lines in wide fonts do not get clipped at the image border.
-local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, fitW, fitH )
+-- ih is the icon height (smaller than the row so it optically matches the
+-- caps height of the text), tp the icon top offset that puts its bottom on
+-- the text baseline. fitW/fitH limit the final block size: it is shrunk
+-- (never enlarged) to fit, so long lines in wide fonts do not get clipped
+-- at the image border.
+local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, ih, tp, fitW, fitH )
 	local fillColor, strokeColor
 	if settings.exifstamp_color == 'black' then
 		fillColor, strokeColor = 'black', 'white'
@@ -294,20 +297,23 @@ local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, fitW
 			parts[ #parts + 1 ] = spacer
 		end
 
-		-- Row: icon scaled to the row height with an outline halo behind it
-		-- (a dilated copy of its alpha painted in the stroke color), then the
-		-- value text drawn twice (outline pass + clean fill pass on top).
+		-- Row: the icon is scaled to ih, its stroke alpha is hardened (thin
+		-- lines go semi-transparent after downscaling and would look grey over
+		-- the halo), it is placed so its bottom sits on the text baseline, and
+		-- an outline halo (dilated alpha in the stroke color) goes behind it.
+		-- Then the value text is drawn twice (outline pass + clean fill pass).
 		local iconFile = LrPathUtils.child( LrPathUtils.child( _PLUGIN.path, 'icons' ), row.icon )
 		local quotedValue = shellQuote( row.value )
 		parts[ #parts + 1 ] = string.format(
-			'\\( \\( "%s" -resize x%s%s '
+			'\\( \\( "%s" -resize x%s%s -channel A -level "0,50%%" +channel '
+			.. '-background none -gravity North -splice 0x%s -extent "%%[fx:w]x%s" '
 			.. '\\( +clone -channel A -morphology Dilate Disk:%s +channel -fill %s -colorize 100 \\) '
 			.. '+swap -background none -compose over -composite \\) '
 			.. '\\( \\( -background none -fill %s -stroke %s -strokewidth %s -font "%s" -size x%s label:%s \\) '
 			.. '\\( -background none -fill %s -stroke none -font "%s" -size x%s label:%s \\) '
 			.. '-background none -gravity center -compose over -composite \\) '
 			.. '-background none +smush %s \\)',
-			iconFile, rh, iconTint, sw, strokeColor,
+			iconFile, ih, iconTint, tp, rh, sw, strokeColor,
 			fillColor, strokeColor, sw, fontPath, rh, quotedValue,
 			fillColor, fontPath, rh, quotedValue,
 			gap )
@@ -328,12 +334,12 @@ local function stampPhoto( magick, fontPath, filePath, rows, settings )
 	-- an icon and its text. MW/MH cap the block size so it never sticks out
 	-- of the image.
 	local blockClause = buildBlockClause( rows, fontPath, settings,
-		'$P', '$SP', '$GAP', '$S', '$MW', '$MH' )
+		'$P', '$SP', '$GAP', '$S', '$IH', '$TP', '$MW', '$MH' )
 
 	local command = string.format(
 		'WH=$(%s identify -format "%%w %%h" %s); W=${WH%%%% *}; H=${WH##* }; '
 		.. 'P=$((H*%d/1000)); [ "$P" -lt 8 ] && P=8; '
-		.. 'S=$((P/14+1)); SP=$((P/12)); GAP=$((P/3)); '
+		.. 'S=$((P/14+1)); SP=$((P/12)); GAP=$((P/3)); IH=$((P*7/10)); TP=$((P/12)); '
 		.. 'MW=$((W-P*2)); MH=$((H-P*2)); '
 		.. '%s %s %s -gravity %s -geometry "+$P+$P" -compose over -composite %s',
 		magick, quotedPath, size,
@@ -398,7 +404,9 @@ local function generatePreview( propertyTable, openAfter )
 		if #rows > 0 then
 			blockClause = buildBlockClause( rows, fontPath, settings,
 				tostring( rowHeight ), tostring( math.floor( rowHeight / 12 ) ),
-				tostring( math.floor( rowHeight / 3 ) ), '2', '348', '228' )
+				tostring( math.floor( rowHeight / 3 ) ), '2',
+				tostring( math.floor( rowHeight * 7 / 10 ) ),
+				tostring( math.floor( rowHeight / 12 ) ), '348', '228' )
 				.. string.format( ' -gravity %s -geometry +16+16 -compose over -composite', gravity )
 		end
 
