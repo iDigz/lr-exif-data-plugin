@@ -342,7 +342,7 @@ local function stampPhoto( magick, fontPath, filePath, rows, settings )
 	local command = string.format(
 		'WH=$(%s identify -format "%%w %%h" %s); W=${WH%%%% *}; H=${WH##* }; '
 		.. 'P=$((H*%d/1000)); [ "$P" -lt 8 ] && P=8; '
-		.. 'S=$((P/14+1)); SP=$((P/12)); GAP=$((P/3)); IH=$((P*18/25)); BM=$((P/6)); TD=$((P/10)); '
+		.. 'S=$((P/14+1)); SP=$((P/12)); GAP=$((P/3)); IH=$((P*7/8)); BM=$((P/9)); TD=0; '
 		.. 'MW=$((W-P*2)); MH=$((H-P*2)); '
 		.. '%s %s %s -gravity %s -geometry "+$P+$P" -compose over -composite %s',
 		magick, quotedPath, size,
@@ -408,9 +408,8 @@ local function generatePreview( propertyTable, openAfter )
 			blockClause = buildBlockClause( rows, fontPath, settings,
 				tostring( rowHeight ), tostring( math.floor( rowHeight / 12 ) ),
 				tostring( math.floor( rowHeight / 3 ) ), '2',
-				tostring( math.floor( rowHeight * 18 / 25 ) ),
-				tostring( math.floor( rowHeight / 6 ) ),
-				tostring( math.floor( rowHeight / 10 ) ), '348', '228' )
+				tostring( math.floor( rowHeight * 7 / 8 ) ),
+				tostring( math.floor( rowHeight / 9 ) ), '0', '348', '228' )
 				.. string.format( ' -gravity %s -geometry +16+16 -compose over -composite', gravity )
 		end
 
