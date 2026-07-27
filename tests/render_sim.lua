@@ -6,12 +6,12 @@ local corner = arg[2] or 'SouthWest'
 local color = arg[3] or 'white'
 
 -- Stub the Lightroom runtime so ExifStampFilter.lua can be loaded as-is.
-_PLUGIN = { path = '.' }
+_PLUGIN = { path = 'ExifStamp.lrplugin' }
 local stubs = {
 	LrView = { bind = function( k ) return k end, share = function( k ) return k end },
 	LrTasks = {},
 	LrFileUtils = { exists = function() return true end },
-	LrPathUtils = {},
+	LrPathUtils = { child = function( a, b ) return a .. '/' .. b end },
 	LrDialogs = {},
 	-- LrLogger is used as: LrLogger('ExifStamp'):enable('logfile')
 	LrLogger = function()
@@ -46,14 +46,14 @@ print( 'parsers OK' )
 -- Render the block with the plugin's own clause builder
 local meta = { camera = 'Canon EOS R5m2', lens = 'Canon RF 24-70mm F2.8L IS USM',
 	focal = '50', aperture = '2.8', shutter = '1/250', iso = '8000' }
-local settings = { exifstamp_color = color,
+local settings = { exifstamp_color = color, exifstamp_corner = corner,
 	exifstamp_showCamera = true, exifstamp_showLens = true, exifstamp_showFocal = true,
 	exifstamp_showAperture = true, exifstamp_showShutter = true, exifstamp_showIso = true }
 
 local rows = t.buildStampRows( meta, settings )
 local fontPath = arg[4] or '/System/Library/Fonts/Helvetica.ttc'
 local clause = t.buildBlockClause( rows, fontPath, settings,
-	'17', '1', '8', '2', '3', '14', '348', '228' )
+	'17', '1', '6', '2', '348', '228' )
 local cmd = string.format(
 	'/opt/homebrew/bin/magick -size 380x260 gradient:gray25-gray70 %s '
 	.. '-gravity %s -geometry +16+16 -compose over -composite "%s"',

@@ -210,23 +210,46 @@ local function prettyLens( lens )
 	return table.concat( words, ' ' )
 end
 
--- Rows of the stamp block: left badge label + right value.
+-- Rows of the stamp block: an icon + a value. Camera and lens share one line;
+-- rows are sorted from the shortest text to the longest.
 local function buildStampRows( meta, settings )
 	local rows = {}
 
-	local function add( enabled, label, value )
-		if enabled and value then
-			rows[ #rows + 1 ] = { label = label, value = string.upper( value ) }
+	local function add( enabled, icon, value )
+		if enabled and value and value ~= '' then
+			rows[ #rows + 1 ] = { icon = icon, value = string.upper( value ) }
 		end
 	end
 
-	add( settings.exifstamp_showCamera, 'CAM', prettyCamera( meta.camera ) )
-	add( settings.exifstamp_showLens, 'LENS', prettyLens( meta.lens ) )
-	add( settings.exifstamp_showFocal, 'FOCAL',
+	local camera = settings.exifstamp_showCamera and prettyCamera( meta.camera ) or nil
+	local lens = settings.exifstamp_showLens and prettyLens( meta.lens ) or nil
+
+	-- Drop the lens brand when it repeats the camera brand: the combined line
+	-- becomes "Canon R5 M II · RF 24-70".
+	if camera and lens then
+		local brand = string.match( camera, '^(%S+)' )
+		if brand then
+			lens = trim( ( string.gsub( lens, '^' .. brand .. '%s+', '' ) ) )
+		end
+	end
+	local camLine = camera
+	if lens then
+		camLine = camLine and ( camLine .. ' · ' .. lens ) or lens
+	end
+
+	add( camLine ~= nil, 'camera.png', camLine )
+	add( settings.exifstamp_showFocal, 'focal.png',
 		meta.focal and string.gsub( meta.focal, '%.0$', '' ) .. 'mm' or nil )
-	add( settings.exifstamp_showAperture, 'APERTURE', meta.aperture and 'f/' .. meta.aperture or nil )
-	add( settings.exifstamp_showShutter, 'SHUTTER', meta.shutter and meta.shutter .. 's' or nil )
-	add( settings.exifstamp_showIso, 'ISO', meta.iso )
+	add( settings.exifstamp_showAperture, 'aperture.png', meta.aperture and 'f/' .. meta.aperture or nil )
+	add( settings.exifstamp_showShutter, 'shutter.png', meta.shutter and meta.shutter .. 's' or nil )
+	add( settings.exifstamp_showIso, 'iso.png', meta.iso )
+
+	table.sort( rows, function( a, b )
+		if #a.value ~= #b.value then
+			return #a.value < #b.value
+		end
+		return a.value < b.value
+	end )
 
 	return rows
 end
@@ -237,62 +260,59 @@ local function shellQuote( text )
 end
 
 -- Build the ImageMagick clause that renders the whole stamp block as one image
--- with transparency: a left column of badges (filled rectangles with knockout
--- letters showing the photo through) and a right column of values, right-aligned.
--- rh/sp/gap/sw/bp/bh are strings: either plain numbers (preview) or shell
--- variables like "$P" (export, where sizes depend on the image height measured
--- in shell). bp is the horizontal padding inside a badge, bh the badge box
--- height (smaller than the row height rh; the badge is padded back to rh with
--- transparent margins so both columns keep identical row heights).
+-- with transparency: each row is an icon plus a value, rows are stacked in
+-- order (already sorted by length) and aligned to the block edge that matches
+-- the chosen corner. rh/sp/gap/sw are strings: either plain numbers (preview)
+-- or shell variables like "$P" (export, where sizes depend on the image height
+-- measured in shell). gap is the space between the icon and the text.
 -- fitW/fitH limit the final block size: it is shrunk (never enlarged) to fit,
 -- so long lines in wide fonts do not get clipped at the image border.
-local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, bp, bh, fitW, fitH )
-	local badgeColor, fillColor, strokeColor
+local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, fitW, fitH )
+	local fillColor, strokeColor
 	if settings.exifstamp_color == 'black' then
-		badgeColor, fillColor, strokeColor = 'black', 'black', 'white'
+		fillColor, strokeColor = 'black', 'white'
 	else
-		badgeColor, fillColor, strokeColor = 'white', 'white', 'black'
+		fillColor, strokeColor = 'white', 'black'
 	end
 
+	-- Icons ship as white glyphs on transparency; tint them for the black scheme.
+	local iconTint = ''
+	if fillColor == 'black' then
+		iconTint = ' -fill black -colorize 100'
+	end
+
+	-- Left corners align rows to the left edge, right corners to the right one.
+	local corner = settings.exifstamp_corner or 'SouthEast'
+	local sideGravity = string.find( corner, 'East' ) and 'East' or 'West'
+
 	-- Parentheses are escaped as \( \) because the command runs through /bin/sh.
-	local badges, values = {}, {}
+	local parts = {}
 	local spacer = string.format( '\\( -size 1x%s xc:none \\)', sp )
 
 	for i, row in ipairs( rows ) do
 		if i > 1 then
-			badges[ #badges + 1 ] = spacer
-			values[ #values + 1 ] = spacer
+			parts[ #parts + 1 ] = spacer
 		end
 
-		-- Badge: render the label, trim to the glyphs, center it inside the
-		-- badge box via -extent, then negate + alpha-copy so the letters become
-		-- transparent holes and paint the box. Finally pad the badge back to
-		-- the full row height with transparent margins.
-		-- The stroke thickens the glyphs (faux bold) — works with any font,
-		-- unlike selecting a real bold face inside a .ttc file.
-		badges[ #badges + 1 ] = string.format(
-			'\\( -background black -fill white -stroke white -strokewidth %s '
-			.. '-font "%s" -size x%s label:%s '
-			.. '-trim +repage -gravity center -extent "%%[fx:w+%s*2]x%s" '
-			.. '-negate -alpha copy -fill %s -colorize 100 '
-			.. '-background none -extent "%%[fx:w]x%s" \\)',
-			sw, fontPath, rh, shellQuote( row.label ), bp, bh, badgeColor, rh )
-
-		-- Value: outline pass + clean fill pass on top.
+		-- Row: icon scaled to the row height, then the value text drawn twice
+		-- (outline pass + clean fill pass on top).
+		local iconFile = LrPathUtils.child( LrPathUtils.child( _PLUGIN.path, 'icons' ), row.icon )
 		local quotedValue = shellQuote( row.value )
-		values[ #values + 1 ] = string.format(
-			'\\( \\( -background none -fill %s -stroke %s -strokewidth %s -font "%s" -size x%s label:%s \\) '
+		parts[ #parts + 1 ] = string.format(
+			'\\( \\( "%s" -resize x%s%s \\) '
+			.. '\\( \\( -background none -fill %s -stroke %s -strokewidth %s -font "%s" -size x%s label:%s \\) '
 			.. '\\( -background none -fill %s -stroke none -font "%s" -size x%s label:%s \\) '
-			.. '-background none -gravity center -compose over -composite \\)',
+			.. '-background none -gravity center -compose over -composite \\) '
+			.. '-background none +smush %s \\)',
+			iconFile, rh, iconTint,
 			fillColor, strokeColor, sw, fontPath, rh, quotedValue,
-			fillColor, fontPath, rh, quotedValue )
+			fillColor, fontPath, rh, quotedValue,
+			gap )
 	end
 
 	return string.format(
-		'\\( \\( %s -background none -gravity West -append \\) '
-		.. '\\( %s -background none -gravity East -append \\) '
-		.. '-background none +smush %s -resize "%sx%s>" \\)',
-		table.concat( badges, ' ' ), table.concat( values, ' ' ), gap, fitW, fitH )
+		'\\( %s -background none -gravity %s -append -resize "%sx%s>" \\)',
+		table.concat( parts, ' ' ), sideGravity, fitW, fitH )
 end
 
 local function stampPhoto( magick, fontPath, filePath, rows, settings )
@@ -302,15 +322,15 @@ local function stampPhoto( magick, fontPath, filePath, rows, settings )
 
 	-- Sizes are derived from the image height in shell: P is the row height,
 	-- S the outline width, SP the spacing between rows, GAP the gap between
-	-- the columns (about one space character), BP the badge padding.
-	-- MW/MH cap the block size so it never sticks out of the image.
+	-- an icon and its text. MW/MH cap the block size so it never sticks out
+	-- of the image.
 	local blockClause = buildBlockClause( rows, fontPath, settings,
-		'$P', '$SP', '$GAP', '$S', '$BP', '$BH', '$MW', '$MH' )
+		'$P', '$SP', '$GAP', '$S', '$MW', '$MH' )
 
 	local command = string.format(
 		'WH=$(%s identify -format "%%w %%h" %s); W=${WH%%%% *}; H=${WH##* }; '
 		.. 'P=$((H*%d/1000)); [ "$P" -lt 8 ] && P=8; '
-		.. 'S=$((P/14+1)); SP=$((P/12)); GAP=$((P/2)); BP=$((P/8+1)); BH=$((P*4/5)); '
+		.. 'S=$((P/14+1)); SP=$((P/12)); GAP=$((P/3)); '
 		.. 'MW=$((W-P*2)); MH=$((H-P*2)); '
 		.. '%s %s %s -gravity %s -geometry "+$P+$P" -compose over -composite %s',
 		magick, quotedPath, size,
@@ -373,9 +393,7 @@ local function generatePreview( propertyTable, openAfter )
 		if #rows > 0 then
 			blockClause = buildBlockClause( rows, fontPath, settings,
 				tostring( rowHeight ), tostring( math.floor( rowHeight / 12 ) ),
-				tostring( math.floor( rowHeight / 2 ) ), '2',
-				tostring( math.floor( rowHeight / 8 ) + 1 ),
-				tostring( math.floor( rowHeight * 4 / 5 ) ), '348', '228' )
+				tostring( math.floor( rowHeight / 3 ) ), '2', '348', '228' )
 				.. string.format( ' -gravity %s -geometry +16+16 -compose over -composite', gravity )
 		end
 
