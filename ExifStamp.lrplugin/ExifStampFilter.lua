@@ -266,11 +266,11 @@ end
 -- or shell variables like "$P" (export, where sizes depend on the image height
 -- measured in shell). gap is the space between the icon and the text.
 -- ih is the icon height (smaller than the row so it optically matches the
--- caps height of the text), tp the icon top offset that puts its bottom on
--- the text baseline. fitW/fitH limit the final block size: it is shrunk
+-- caps height of the text), bm the icon bottom margin that puts its bottom
+-- near the text baseline. fitW/fitH limit the final block size: it is shrunk
 -- (never enlarged) to fit, so long lines in wide fonts do not get clipped
 -- at the image border.
-local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, ih, tp, fitW, fitH )
+local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, ih, bm, fitW, fitH )
 	local fillColor, strokeColor
 	if settings.exifstamp_color == 'black' then
 		fillColor, strokeColor = 'black', 'white'
@@ -306,14 +306,14 @@ local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, ih, 
 		local quotedValue = shellQuote( row.value )
 		parts[ #parts + 1 ] = string.format(
 			'\\( \\( "%s" -resize x%s%s -channel A -level "0,50%%" +channel '
-			.. '-background none -gravity North -splice 0x%s -extent "%%[fx:w]x%s" '
+			.. '-background none -gravity South -splice 0x%s -extent "%%[fx:w]x%s" '
 			.. '\\( +clone -channel A -morphology Dilate Disk:%s +channel -fill %s -colorize 100 \\) '
 			.. '+swap -background none -compose over -composite \\) '
 			.. '\\( \\( -background none -fill %s -stroke %s -strokewidth %s -font "%s" -size x%s label:%s \\) '
 			.. '\\( -background none -fill %s -stroke none -font "%s" -size x%s label:%s \\) '
 			.. '-background none -gravity center -compose over -composite \\) '
 			.. '-background none +smush %s \\)',
-			iconFile, ih, iconTint, tp, rh, sw, strokeColor,
+			iconFile, ih, iconTint, bm, rh, sw, strokeColor,
 			fillColor, strokeColor, sw, fontPath, rh, quotedValue,
 			fillColor, fontPath, rh, quotedValue,
 			gap )
@@ -339,7 +339,7 @@ local function stampPhoto( magick, fontPath, filePath, rows, settings )
 	local command = string.format(
 		'WH=$(%s identify -format "%%w %%h" %s); W=${WH%%%% *}; H=${WH##* }; '
 		.. 'P=$((H*%d/1000)); [ "$P" -lt 8 ] && P=8; '
-		.. 'S=$((P/14+1)); SP=$((P/12)); GAP=$((P/3)); IH=$((P*7/10)); TP=$((P/40)); '
+		.. 'S=$((P/14+1)); SP=$((P/12)); GAP=$((P/3)); IH=$((P*2/3)); BM=$((P/3)); '
 		.. 'MW=$((W-P*2)); MH=$((H-P*2)); '
 		.. '%s %s %s -gravity %s -geometry "+$P+$P" -compose over -composite %s',
 		magick, quotedPath, size,
@@ -405,8 +405,8 @@ local function generatePreview( propertyTable, openAfter )
 			blockClause = buildBlockClause( rows, fontPath, settings,
 				tostring( rowHeight ), tostring( math.floor( rowHeight / 12 ) ),
 				tostring( math.floor( rowHeight / 3 ) ), '2',
-				tostring( math.floor( rowHeight * 7 / 10 ) ),
-				tostring( math.floor( rowHeight / 40 ) ), '348', '228' )
+				tostring( math.floor( rowHeight * 2 / 3 ) ),
+				tostring( math.floor( rowHeight / 3 ) ), '348', '228' )
 				.. string.format( ' -gravity %s -geometry +16+16 -compose over -composite', gravity )
 		end
 
