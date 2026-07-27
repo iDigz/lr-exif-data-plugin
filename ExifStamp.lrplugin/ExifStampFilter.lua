@@ -65,7 +65,7 @@ local ExifStampFilter = {}
 ExifStampFilter.exportPresetFields = {
 	{ key = 'exifstamp_enabled', default = true },
 	{ key = 'exifstamp_corner', default = 'SouthEast' },
-	{ key = 'exifstamp_fontSize', default = 9 },     -- text height, 1/1000 of image height
+	{ key = 'exifstamp_textSize', default = 18 },    -- text height, 1/1000 of image height
 	{ key = 'exifstamp_font', default = DEFAULT_FONT },
 	{ key = 'exifstamp_color', default = 'white' },
 	{ key = 'exifstamp_showCamera', default = true },
@@ -294,17 +294,20 @@ local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, fitW
 			parts[ #parts + 1 ] = spacer
 		end
 
-		-- Row: icon scaled to the row height, then the value text drawn twice
-		-- (outline pass + clean fill pass on top).
+		-- Row: icon scaled to the row height with an outline halo behind it
+		-- (a dilated copy of its alpha painted in the stroke color), then the
+		-- value text drawn twice (outline pass + clean fill pass on top).
 		local iconFile = LrPathUtils.child( LrPathUtils.child( _PLUGIN.path, 'icons' ), row.icon )
 		local quotedValue = shellQuote( row.value )
 		parts[ #parts + 1 ] = string.format(
-			'\\( \\( "%s" -resize x%s%s \\) '
+			'\\( \\( "%s" -resize x%s%s '
+			.. '\\( +clone -channel A -morphology Dilate Disk:%s +channel -fill %s -colorize 100 \\) '
+			.. '+swap -background none -compose over -composite \\) '
 			.. '\\( \\( -background none -fill %s -stroke %s -strokewidth %s -font "%s" -size x%s label:%s \\) '
 			.. '\\( -background none -fill %s -stroke none -font "%s" -size x%s label:%s \\) '
 			.. '-background none -gravity center -compose over -composite \\) '
 			.. '-background none +smush %s \\)',
-			iconFile, rh, iconTint,
+			iconFile, rh, iconTint, sw, strokeColor,
 			fillColor, strokeColor, sw, fontPath, rh, quotedValue,
 			fillColor, fontPath, rh, quotedValue,
 			gap )
@@ -316,7 +319,7 @@ local function buildBlockClause( rows, fontPath, settings, rh, sp, gap, sw, fitW
 end
 
 local function stampPhoto( magick, fontPath, filePath, rows, settings )
-	local size = tonumber( settings.exifstamp_fontSize ) or 9
+	local size = tonumber( settings.exifstamp_textSize ) or 18
 	local gravity = settings.exifstamp_corner or 'SouthEast'
 	local quotedPath = '"' .. filePath .. '"'
 
@@ -381,7 +384,9 @@ local function generatePreview( propertyTable, openAfter )
 	LrTasks.startAsyncTask( function()
 		local rows = buildStampRows( SAMPLE_META, settings )
 
-		local rowHeight = ( tonumber( settings.exifstamp_fontSize ) or 9 ) + 8
+		-- The preview swatch is small, so its row height grows slower than the
+		-- real export size (which is in 1/1000 of the image height).
+		local rowHeight = math.floor( ( tonumber( settings.exifstamp_textSize ) or 18 ) / 2 ) + 8
 		local gravity = settings.exifstamp_corner or 'SouthEast'
 		local fontPath = resolveFont( settings )
 
@@ -442,7 +447,7 @@ function ExifStampFilter.sectionForFilterInDialog( f, propertyTable )
 		propertyTable._exifstampReady = true
 
 		local observedKeys = {
-			'exifstamp_enabled', 'exifstamp_corner', 'exifstamp_fontSize',
+			'exifstamp_enabled', 'exifstamp_corner', 'exifstamp_textSize',
 			'exifstamp_font', 'exifstamp_color',
 			'exifstamp_showCamera', 'exifstamp_showLens', 'exifstamp_showFocal',
 			'exifstamp_showAperture', 'exifstamp_showShutter', 'exifstamp_showIso',
@@ -486,11 +491,11 @@ function ExifStampFilter.sectionForFilterInDialog( f, propertyTable )
 			f:row {
 				f:static_text { title = 'Размер:', width = LrView.share 'exifstamp_label' },
 				f:popup_menu {
-					value = bind 'exifstamp_fontSize',
+					value = bind 'exifstamp_textSize',
 					items = {
-						{ title = 'Мелкий', value = 6 },
-						{ title = 'Средний', value = 9 },
-						{ title = 'Крупный', value = 12 },
+						{ title = 'Мелкий', value = 12 },
+						{ title = 'Средний', value = 18 },
+						{ title = 'Крупный', value = 24 },
 					},
 				},
 			},
